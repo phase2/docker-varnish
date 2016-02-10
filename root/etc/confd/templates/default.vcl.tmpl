@@ -1,0 +1,140 @@
+# This is is required for all Varnish 4 VCL configurations.
+vcl 4.0;
+
+# The access control list from which PURGE requests can come.
+acl purge {
+  "localhost";
+  "127.0.0.1";
+  "::1";
+}
+
+# Set up a configuration to connect to "www" on port 80.
+backend default {
+  .host = "{{ getenv "VARNISH_BACKEND_HOST" }}";
+  .port = "{{ getenv "VARNISH_BACKEND_PORT" }}";
+  .connect_timeout = 120s;
+  .first_byte_timeout = 120s;
+  .between_bytes_timeout = 120s;
+}
+
+sub vcl_recv {
+  # Create or add to an X-Forwarded-For header.
+  if (req.restarts == 0) {
+    if (req.http.X-Forwarded-For) { # set or append the client.ip to X-Forwarded-For header
+      set req.http.X-Forwarded-For = req.http.X-Forwarded-For + ", " + client.ip;
+    } else {
+      set req.http.X-Forwarded-For = client.ip;
+    }
+  }
+
+
+  # Allow purging with the PURGE HTTP verb.
+  if (req.method == "PURGE") {
+    if (!client.ip ~ purge) {
+      return (synth(403, "Your host is not allowed to PURGE content."));
+    }
+    return (purge);
+  }
+
+  if (req.method != "GET" &&
+    req.method != "HEAD" &&
+    req.method != "PUT" &&
+    req.method != "POST" &&
+    req.method != "TRACE" &&
+    req.method != "OPTIONS" &&
+    req.method != "DELETE") {
+    # Non-RFC2616 or CONNECT which is weird.
+    return (pipe);
+  }
+
+  if (req.method != "GET" && req.method != "HEAD") {
+    # We only deal with GET and HEAD by default.
+    return (pass);
+  }
+
+  # Whitelist only the Drupal session cookie (secure or otherwise).
+  if (req.http.cookie) {
+    set req.http.cookie = ";" + req.http.cookie;
+    set req.http.cookie = regsuball(req.http.cookie, "; +", ";");
+    set req.http.cookie = regsuball(req.http.cookie, ";(S?SESS[a-z0-9]+)=", "; \1=");
+    set req.http.cookie = regsuball(req.http.cookie, ";[^ ][^;]*", "");
+    set req.http.cookie = regsuball(req.http.cookie, "^[; ]+|[; ]+$", "");
+  }
+
+  # Remove a ";" prefix, if present.
+  set req.http.cookie = regsub(req.http.cookie, "^;\s*", "");
+
+  # Remove empty cookies.
+  if (req.http.cookie ~ "^\s*$") {
+    unset req.http.cookie;
+  }
+
+  # Skip the Varnish cache for install, update, and cron
+  if (req.url ~ "install\.php|update\.php|cron\.php") {
+    return (pass);
+  }
+
+  if (req.url ~ "\.(aif|aiff|au|avi|bin|bmp|cab|carb|cct|cdf|class|css|dcr|doc|dtd|eot|exe|flv|gcf|gff|gif|grv|hdml|hqx|html|ico|ini|jpeg|jpg|js|mov|mp3|nc|pct|pdf|pdf|png|ppc|pws|otf|svg|swa|swf|swf|ttf|txt|vbs|w32|wav|wbmp|wml|wmlc|wmls|wmlsc|woff|xml|xsd|xsl|zip)") {
+    # Don't use Cookie variance for static files. This will let authenticated users
+    # get cache hits.
+    unset req.http.cookie;
+  }
+
+  return (hash);
+}
+
+sub vcl_hash {
+  # This allows Varnish to work properly behind an SSL-terminating proxy.
+  if (req.http.x-forwarded-proto) {
+    hash_data(req.http.x-forwarded-proto);
+  }
+
+  # This will allow Varnish to cache a site with basic auth.
+  if (req.http.authorization) {
+    hash_data(req.http.authorization);
+  }
+
+  # This ensures that Varnish does not have a problem distinguishing anonymous and authenticated.
+  if (req.http.cookie) {
+    hash_data(req.http.cookie);
+  }
+}
+
+sub vcl_backend_response {
+  # Add an X-Host and X-URL header for bans.
+  set beresp.http.x-host = bereq.http.host;
+  set beresp.http.x-url = bereq.url;
+  # Strip any cookies before an image/js/css is inserted into cache.
+  if (bereq.url ~ "\.(aif|aiff|au|avi|bin|bmp|cab|carb|cct|cdf|class|css|dcr|doc|dtd|eot|exe|flv|gcf|gff|gif|grv|hdml|hqx|html|ico|ini|jpeg|jpg|js|mov|mp3|nc|pct|pdf|png|ppc|pws|otf|svg|swa|swf|swf|ttf|txt|vbs|w32|wav|wbmp|wml|wmlc|wmls|wmlsc|woff|xml|xsd|xsl|zip)"){
+    unset beresp.http.set-cookie;
+  }
+
+  # Make sure a browser would never cache an uncacheable (e.g. 50x) response.
+  if (beresp.ttl <= 0s) {
+    set beresp.http.Cache-Control = "no-cache, no-store, must-revalidate";
+  } else if (beresp.http.Content-Type ~ "text/html" && beresp.ttl > 0s) {
+    # Set a short TTL for HTML to force re-updating against the Drupal page cache.
+    set beresp.ttl = 1m;
+  }
+
+  # Keep this around for 24 hours past its TTL. This will allow Varnish 4 to
+  # re-update it in the background.
+  set beresp.grace = 24h;
+  set beresp.keep = 24h;
+
+  # You _may_ want to return a hit-for-pass here, or disable it, depending on
+  # if you expect to have a lot of non-cacheable responses.
+  #
+  # The default here will fall through to Varnish's default processing logic
+  # which will sent a 2 minute hit-for-pass if this URL returns an uncacheable
+  # response.
+  #
+  # Comment out the following line to always hit-for-pass.
+  return (deliver);
+}
+
+sub vcl_deliver {
+  # Don't output the headers that are used for ban purposes.
+  unset resp.http.x-host;
+  unset resp.http.x-url;
+}
