@@ -6,6 +6,8 @@ acl purge {
   "localhost";
   "127.0.0.1";
   "::1";
+  # The full range of possible IP's with the docker0 bridge interface.
+  "172.17.0.0/16";
 }
 
 # Set up a configuration to connect to "www" on port 80.
