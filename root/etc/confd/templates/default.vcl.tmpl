@@ -31,10 +31,17 @@ sub vcl_recv {
 
 
   # Allow purging with the PURGE HTTP verb.
-  if (req.method == "PURGE") {
+  if (req.method == "PURGE" || req.method == "PURGEALL") {
     if (!client.ip ~ purge) {
       return (synth(403, "Your host is not allowed to PURGE content."));
     }
+
+    if (req.method == "PURGEALL") {
+      // Purge all objects from cache that match the incoming host
+      ban ("req.url ~ ^/ && req.http.host == " + req.http.host);
+      return (synth(200, "Purged"));
+    }
+
     return (purge);
   }
 
