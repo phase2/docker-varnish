@@ -45,6 +45,29 @@ sub vcl_recv {
     return (purge);
   }
 
+  # Allow bans for the same people purges are allowed for
+  if (req.method == "BAN") {
+    if (!client.ip ~ purge) {
+      return (synth(403, "Your host is not allowed to BAN content."));
+    }
+
+    // Purge-Cache-Tags is the header set by the purge module
+    if (req.http.Purge-Cache-Tags) {
+      // note that a cache tag which is a substring of another cache
+      // tag will result in a more broad than intended ban but does
+      // allow for convenient all objects of type banning possibilities.
+      // Would need to add word boundary constraints on match to prevent
+      // that if desired
+      ban ("obj.http.Purge-Cache-Tags ~ " + req.http.Purge-Cache-Tags);
+    }
+    else {
+      return (synth(403, "Purge-Cache-Tags header missing."));
+    }
+
+    # Return a synthetic page so the request won't go to the backend.
+    return (synth(200, "Ban Added"));
+  }
+
   if (req.method != "GET" &&
     req.method != "HEAD" &&
     req.method != "PUT" &&
@@ -146,4 +169,5 @@ sub vcl_deliver {
   # Don't output the headers that are used for ban purposes.
   unset resp.http.x-host;
   unset resp.http.x-url;
+  unset resp.http.Purge-Cache-Tags;
 }
