@@ -1,3 +1,3 @@
 #!/bin/bash
 
-docker build -t phase2/varnish4 .
+docker build -t outrigger/varnish4 .

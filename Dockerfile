@@ -1,4 +1,4 @@
-FROM phase2/servicebase
+FROM outrigger/servicebase
 
 RUN yum -y update && \
     yum -y install varnish && \
